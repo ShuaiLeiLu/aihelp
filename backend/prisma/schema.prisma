@@ -111,15 +111,15 @@ enum ImageTaskStatus {
 }
 
 model User {
-  id              String                 @id @default(uuid())
-  displayName     String                 @default("")
-  avatarUrl       String                 @default("")
-  email           String?                @unique
-  casdoorSubject  String?                @unique
-  status          UserStatus             @default(active)
-  createdAt       DateTime               @default(now())
-  updatedAt       DateTime               @updatedAt
-  lastLoginAt     DateTime?
+  id             String            @id @default(uuid())
+  displayName    String            @default("")
+  avatarUrl      String            @default("")
+  email          String?           @unique
+  casdoorSubject String?           @unique
+  status         UserStatus        @default(active)
+  createdAt      DateTime          @default(now())
+  updatedAt      DateTime          @updatedAt
+  lastLoginAt    DateTime?
   pointAccount   PointAccount?
   pointLedger    PointLedger[]
   conversations  Conversation[]
@@ -136,16 +136,16 @@ model User {
 }
 
 model AdminUser {
-  id           String          @id @default(uuid())
-  username     String          @unique
-  email        String          @unique
-  casdoorSubject String?       @unique
-  role         AdminRole       @default(admin)
-  status       UserStatus      @default(active)
-  lastLoginAt  DateTime?
-  createdAt    DateTime        @default(now())
-  updatedAt    DateTime        @updatedAt
-  auditLogs    AdminAuditLog[]
+  id             String          @id @default(uuid())
+  username       String          @unique
+  email          String          @unique
+  casdoorSubject String?         @unique
+  role           AdminRole       @default(admin)
+  status         UserStatus      @default(active)
+  lastLoginAt    DateTime?
+  createdAt      DateTime        @default(now())
+  updatedAt      DateTime        @updatedAt
+  auditLogs      AdminAuditLog[]
 }
 
 model Plan {
@@ -405,16 +405,16 @@ model UserImageRef {
 }
 
 model AdRewardConfig {
-  id                   String   @id @default(uuid())
-  enabled              Boolean  @default(false)
-  adUnitId             String   @default("")
-  rewardPoints         BigInt   @default(10)
-  dailyLimitPerUser    Int      @default(5)
-  minIntervalSeconds   Int      @default(30)
-  sessionTtlSeconds    Int      @default(300)
-  updatedByAdminId     String?
-  updatedAt            DateTime @updatedAt
-  createdAt            DateTime @default(now())
+  id                 String   @id @default(uuid())
+  enabled            Boolean  @default(false)
+  adUnitId           String   @default("")
+  rewardPoints       BigInt   @default(10)
+  dailyLimitPerUser  Int      @default(5)
+  minIntervalSeconds Int      @default(30)
+  sessionTtlSeconds  Int      @default(300)
+  updatedByAdminId   String?
+  updatedAt          DateTime @updatedAt
+  createdAt          DateTime @default(now())
 }
 
 model AdRewardSession {

@@ -89,17 +89,23 @@ export class PointsService {
     if (deltaPoints === BigInt(0) && type !== 'manual_adjustment') {
       throw new BadRequestException('points_required')
     }
-    const account = await tx.pointAccount.upsert({
+    await tx.pointAccount.upsert({
       where: { userId },
       create: { userId, balance: BigInt(0) },
       update: {}
     })
-    const nextBalance = account.balance + deltaPoints
-    if (nextBalance < BigInt(0)) throw new BadRequestException('points_insufficient')
-    const updated = await tx.pointAccount.update({
-      where: { userId },
-      data: { balance: nextBalance }
+    const updatedRows = await tx.pointAccount.updateManyAndReturn({
+      where: deltaPoints < BigInt(0)
+        ? { userId, balance: { gte: -deltaPoints } }
+        : { userId },
+      data: { balance: { increment: deltaPoints } },
+      select: { balance: true }
     })
+    const updated = updatedRows[0]
+    if (!updated) {
+      if (deltaPoints < BigInt(0)) throw new BadRequestException('points_insufficient')
+      throw new BadRequestException('points_update_failed')
+    }
     const ledger = await tx.pointLedger.create({
       data: {
         userId,

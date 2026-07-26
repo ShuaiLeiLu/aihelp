@@ -199,9 +199,7 @@ main() {
   fi
 
   if [ "$SKIP_MIGRATE" = "false" ]; then
-    log "stopping old services before schema migration"
-    compose stop "$FRONTEND_SERVICE" "$BACKEND_SERVICE" || true
-    log "running prisma migration on $BACKEND_SERVICE"
+    log "running prisma migration on $BACKEND_SERVICE while the current release remains online"
     compose run --rm --no-deps "$BACKEND_SERVICE" npm run prisma:deploy
   else
     log "skip prisma migration"

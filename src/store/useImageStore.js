@@ -1,8 +1,9 @@
 'use client'
 
 import { create } from 'zustand'
-import { persist } from 'zustand/middleware'
+import { createJSONStorage, persist } from 'zustand/middleware'
 import { uid } from '@/lib/utils'
+import { accountStorage, getAccountStorageKey, readAccountState, setActiveAccountId } from './useStore'
 
 const DEFAULT_PARAMS = {
   size: '1024x1024',
@@ -24,6 +25,7 @@ const DEFAULT_PRESET = {
 export const useImageStore = create(
   persist(
     (set, get) => ({
+      accountId: null,
       // --- task index (in memory + persisted lightly; full data in IndexedDB) ---
       taskIndex: [], // [{ id, status, prompt, createdAt, modelId }]
 
@@ -39,6 +41,44 @@ export const useImageStore = create(
       filter: 'all', // all | running | done | failed
       search: '',
       activeTaskId: null,
+
+      setAccountScope: (accountId) => {
+        const normalized = String(accountId || '').trim()
+        if (!normalized || get().accountId === normalized) return
+        setActiveAccountId(normalized)
+        const saved = readAccountState('chatty-image-ui', normalized)
+        set({
+          accountId: normalized,
+          taskIndex: [],
+          activeTaskId: null,
+          prompt: typeof saved?.prompt === 'string' ? saved.prompt : '',
+          modelId: saved?.modelId || null,
+          params: saved?.params && typeof saved.params === 'object' ? { ...DEFAULT_PARAMS, ...saved.params } : { ...DEFAULT_PARAMS },
+          sizePreset: saved?.sizePreset && typeof saved.sizePreset === 'object' ? { ...DEFAULT_PRESET, ...saved.sizePreset } : { ...DEFAULT_PRESET },
+          filter: saved?.filter || 'all',
+          search: typeof saved?.search === 'string' ? saved.search : '',
+          refs: []
+        })
+      },
+
+      clearAccountData: () => {
+        const currentId = get().accountId
+        set({
+          accountId: null,
+          taskIndex: [],
+          prompt: '',
+          modelId: null,
+          params: { ...DEFAULT_PARAMS },
+          sizePreset: { ...DEFAULT_PRESET },
+          refs: [],
+          filter: 'all',
+          search: '',
+          activeTaskId: null
+        })
+        const key = getAccountStorageKey('chatty-image-ui', currentId)
+        if (typeof window !== 'undefined' && key) window.localStorage.removeItem(key)
+        setActiveAccountId(null)
+      },
 
       // ---- actions ----
       setPrompt: (prompt) => set({ prompt }),
@@ -114,7 +154,10 @@ export const useImageStore = create(
     }),
     {
       name: 'chatty-image-ui',
+      storage: createJSONStorage(() => accountStorage('chatty-image-ui')),
+      skipHydration: true,
       partialize: (state) => ({
+        prompt: state.prompt,
         modelId: state.modelId,
         params: state.params,
         sizePreset: state.sizePreset,

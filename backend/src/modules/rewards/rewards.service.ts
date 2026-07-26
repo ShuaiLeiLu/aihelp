@@ -1,4 +1,5 @@
 import { BadRequestException, Injectable } from '@nestjs/common'
+import { Prisma } from '@prisma/client'
 import { randomToken } from '../../common/http'
 import { PrismaService } from '../prisma/prisma.service'
 import { PointsService } from '../points/points.service'
@@ -45,37 +46,47 @@ export class RewardsService {
   }
 
   async webClaim(userId: string, rewardSessionId: string) {
-    const reward = await this.prisma.adRewardSession.findUnique({ where: { rewardSessionId } })
-    if (!reward || reward.userId !== userId) throw new BadRequestException('reward_session_not_found')
-    if (reward.status === 'granted') return { ok: true, duplicated: true }
-    if (reward.expiresAt <= new Date()) throw new BadRequestException('reward_session_expired')
-    if (reward.status !== 'pending') throw new BadRequestException('reward_session_consumed')
+    return this.serializableTransaction(async (tx) => {
+      const reward = await tx.adRewardSession.findUnique({ where: { rewardSessionId } })
+      if (!reward || reward.userId !== userId) throw new BadRequestException('reward_session_not_found')
+      if (reward.status === 'granted') return { ok: true, duplicated: true }
+      if (reward.expiresAt <= new Date()) throw new BadRequestException('reward_session_expired')
+      if (reward.status !== 'pending') throw new BadRequestException('reward_session_consumed')
 
-    const config = await this.getConfig()
-    await this.assertCanClaim(userId, config.dailyLimitPerUser, config.minIntervalSeconds)
-    const result = await this.points.addPoints({
-      userId,
-      points: reward.rewardPoints,
-      type: 'ad_reward',
-      relatedId: reward.rewardSessionId,
-      remark: '网页视频广告奖励'
+      const config = await this.getConfig(tx)
+      await this.assertCanClaim(userId, config.dailyLimitPerUser, config.minIntervalSeconds, tx)
+      const claimedAt = new Date()
+      const claimed = await tx.adRewardSession.updateMany({
+        where: { rewardSessionId, userId, status: 'pending', expiresAt: { gt: claimedAt } },
+        data: { status: 'granted', grantedAt: claimedAt }
+      })
+      if (claimed.count !== 1) {
+        const current = await tx.adRewardSession.findUnique({ where: { rewardSessionId } })
+        if (current?.status === 'granted') return { ok: true, duplicated: true }
+        throw new BadRequestException('reward_session_consumed')
+      }
+
+      const result = await this.points.changePointsInTransaction(
+        tx,
+        userId,
+        reward.rewardPoints,
+        'ad_reward',
+        reward.rewardSessionId,
+        '网页视频广告奖励'
+      )
+      await tx.adRewardEvent.create({
+        data: { rewardSessionId, userId, openid: reward.openid, eventType: 'claim', result: 'granted' }
+      })
+      return { ok: true, rewardPoints: reward.rewardPoints.toString(), pointsBalance: result.pointsBalance.toString() }
     })
-    await this.prisma.adRewardSession.update({
-      where: { rewardSessionId },
-      data: { status: 'granted', grantedAt: new Date() }
-    })
-    await this.prisma.adRewardEvent.create({
-      data: { rewardSessionId, userId, openid: reward.openid, eventType: 'claim', result: 'granted' }
-    })
-    return { ok: true, rewardPoints: reward.rewardPoints.toString(), pointsBalance: result.pointsBalance.toString() }
   }
 
-  async getCheckinStatus(userId: string) {
+  async getCheckinStatus(userId: string, db: PrismaService | Prisma.TransactionClient = this.prisma) {
     const today = new Date()
     today.setHours(0, 0, 0, 0)
     const yesterday = new Date(today.getTime() - 24 * 60 * 60 * 1000)
 
-    const checkins = await this.prisma.pointLedger.findMany({
+    const checkins = await db.pointLedger.findMany({
       where: {
         userId,
         type: 'manual_adjustment',
@@ -128,43 +139,39 @@ export class RewardsService {
   async performCheckin(userId: string) {
     const today = new Date()
     today.setHours(0, 0, 0, 0)
+    const relatedId = `checkin_${this.localDayKey(today)}`
 
-    const existing = await this.prisma.pointLedger.findFirst({
-      where: {
+    return this.serializableTransaction(async (tx) => {
+      const existing = await tx.pointLedger.findFirst({
+        where: { userId, type: 'manual_adjustment', relatedId }
+      })
+      if (existing) throw new BadRequestException('already_checked_in')
+
+      const status = await this.getCheckinStatus(userId, tx)
+      const rewardAmount = status.todayReward
+      const result = await this.points.changePointsInTransaction(
+        tx,
         userId,
-        type: 'manual_adjustment',
-        remark: '每日签到',
-        createdAt: { gte: today }
+        BigInt(rewardAmount),
+        'manual_adjustment',
+        relatedId,
+        '每日签到'
+      )
+
+      return {
+        ok: true,
+        rewardPoints: rewardAmount,
+        pointsBalance: result.pointsBalance.toString(),
+        streak: status.streak + 1
       }
     })
-    if (existing) {
-      throw new BadRequestException('already_checked_in')
-    }
-
-    const status = await this.getCheckinStatus(userId)
-    const rewardAmount = status.todayReward
-
-    const result = await this.points.addPoints({
-      userId,
-      points: BigInt(rewardAmount),
-      type: 'manual_adjustment',
-      relatedId: 'checkin_' + today.toISOString().split('T')[0],
-      remark: '每日签到'
-    })
-
-    return {
-      ok: true,
-      rewardPoints: rewardAmount,
-      pointsBalance: result.pointsBalance.toString(),
-      streak: status.streak + 1
-    }
   }
 
-  async getDailyTasksStatus(userId: string) {
+  async getDailyTasksStatus(userId: string, db: PrismaService | Prisma.TransactionClient = this.prisma) {
     const today = new Date()
     today.setHours(0, 0, 0, 0)
 
-    const dialogCount = await this.prisma.message.count({
+    const dialogCount = await db.message.count({
       where: {
         userId,
         role: 'user',
@@ -172,14 +179,14 @@ export class RewardsService {
       }
     })
 
-    const imageCount = await this.prisma.imageTask.count({
+    const imageCount = await db.imageTask.count({
       where: {
         userId,
         createdAt: { gte: today }
       }
     })
 
-    const modelGroup = await this.prisma.llmRequest.groupBy({
+    const modelGroup = await db.llmRequest.groupBy({
       by: ['modelId'],
       where: {
         userId,
@@ -189,7 +196,7 @@ export class RewardsService {
     const modelCount = modelGroup.length
 
     // Check if task rewards have already been claimed
-    const claims = await this.prisma.pointLedger.findMany({
+    const claims = await db.pointLedger.findMany({
       where: {
         userId,
         type: 'manual_adjustment',
@@ -204,7 +211,7 @@ export class RewardsService {
       dialog: { completed: dialogCount > 0, count: dialogCount, target: 1, reward: 100, claimed: hasClaimed('任务：完成一次对话') },
       image: { completed: imageCount > 0, count: imageCount, target: 1, reward: 150, claimed: hasClaimed('任务：生成一张图片') },
       models: { completed: modelCount >= 3, count: modelCount, target: 3, reward: 200, claimed: hasClaimed('任务：切换三个模型') },
-      share: { completed: true, count: hasClaimed('任务：分享对话') ? 1 : 0, target: 1, reward: 300, claimed: hasClaimed('任务：分享对话') }
+      share: { completed: false, count: 0, target: 1, reward: 300, claimed: hasClaimed('任务：分享对话') }
     }
   }
 
@@ -212,55 +219,50 @@ export class RewardsService {
     const today = new Date()
     today.setHours(0, 0, 0, 0)
 
-    const status = await this.getDailyTasksStatus(userId)
-    let rewardAmount = 0
-    let taskRemark = ''
+    return this.serializableTransaction(async (tx) => {
+      const status = await this.getDailyTasksStatus(userId, tx)
+      let rewardAmount = 0
+      let taskRemark = ''
 
-    if (taskType === 'dialog') {
-      if (!status.dialog.completed) throw new BadRequestException('task_not_completed')
-      rewardAmount = status.dialog.reward
-      taskRemark = '任务：完成一次对话'
-    } else if (taskType === 'image') {
-      if (!status.image.completed) throw new BadRequestException('task_not_completed')
-      rewardAmount = status.image.reward
-      taskRemark = '任务：生成一张图片'
-    } else if (taskType === 'models') {
-      if (!status.models.completed) throw new BadRequestException('task_not_completed')
-      rewardAmount = status.models.reward
-      taskRemark = '任务：切换三个模型'
-    } else if (taskType === 'share') {
-      // client can trigger share completion directly
-      rewardAmount = status.share.reward
-      taskRemark = '任务：分享对话'
-    } else {
-      throw new BadRequestException('invalid_task_type')
-    }
+      if (taskType === 'dialog') {
+        if (!status.dialog.completed) throw new BadRequestException('task_not_completed')
+        rewardAmount = status.dialog.reward
+        taskRemark = '任务：完成一次对话'
+      } else if (taskType === 'image') {
+        if (!status.image.completed) throw new BadRequestException('task_not_completed')
+        rewardAmount = status.image.reward
+        taskRemark = '任务：生成一张图片'
+      } else if (taskType === 'models') {
+        if (!status.models.completed) throw new BadRequestException('task_not_completed')
+        rewardAmount = status.models.reward
+        taskRemark = '任务：切换三个模型'
+      } else if (taskType === 'share') {
+        throw new BadRequestException('task_not_completed')
+      } else {
+        throw new BadRequestException('invalid_task_type')
+      }
 
-    const existing = await this.prisma.pointLedger.findFirst({
-      where: {
+      const relatedId = `task_${taskType}_${this.localDayKey(today)}`
+      const existing = await tx.pointLedger.findFirst({
+        where: { userId, type: 'manual_adjustment', relatedId }
+      })
+      if (existing) throw new BadRequestException('task_reward_already_claimed')
+
+      const result = await this.points.changePointsInTransaction(
+        tx,
         userId,
-        type: 'manual_adjustment',
-        remark: taskRemark,
-        createdAt: { gte: today }
+        BigInt(rewardAmount),
+        'manual_adjustment',
+        relatedId,
+        taskRemark
+      )
+
+      return {
+        ok: true,
+        rewardPoints: rewardAmount,
+        pointsBalance: result.pointsBalance.toString()
       }
     })
-    if (existing) {
-      throw new BadRequestException('task_reward_already_claimed')
-    }
-
-    const result = await this.points.addPoints({
-      userId,
-      points: BigInt(rewardAmount),
-      type: 'manual_adjustment',
-      relatedId: `task_${taskType}_` + today.toISOString().split('T')[0],
-      remark: taskRemark
-    })
-
-    return {
-      ok: true,
-      rewardPoints: rewardAmount,
-      pointsBalance: result.pointsBalance.toString()
-    }
   }
 
   adminConfig() {
@@ -291,16 +293,21 @@ export class RewardsService {
     return this.prisma.adRewardEvent.findMany({ orderBy: { createdAt: 'desc' }, take: 200 })
   }
 
-  private async getConfig() {
-    return this.prisma.adRewardConfig.upsert({ where: { id: 'default' }, create: { id: 'default' }, update: {} })
+  private async getConfig(db: PrismaService | Prisma.TransactionClient = this.prisma) {
+    return db.adRewardConfig.upsert({ where: { id: 'default' }, create: { id: 'default' }, update: {} })
   }
 
-  private async assertCanClaim(userId: string, dailyLimit: number, minIntervalSeconds: number) {
+  private async assertCanClaim(
+    userId: string,
+    dailyLimit: number,
+    minIntervalSeconds: number,
+    db: PrismaService | Prisma.TransactionClient = this.prisma
+  ) {
     const today = new Date()
     today.setHours(0, 0, 0, 0)
     const [claimed, latest] = await Promise.all([
-      this.prisma.adRewardSession.count({ where: { userId, status: 'granted', createdAt: { gte: today } } }),
-      this.prisma.adRewardSession.findFirst({ where: { userId, status: 'granted' }, orderBy: { grantedAt: 'desc' } })
+      db.adRewardSession.count({ where: { userId, status: 'granted', createdAt: { gte: today } } }),
+      db.adRewardSession.findFirst({ where: { userId, status: 'granted' }, orderBy: { grantedAt: 'desc' } })
     ])
     if (claimed >= dailyLimit) throw new BadRequestException('reward_daily_limit')
     if (latest?.grantedAt && Date.now() - latest.grantedAt.getTime() < minIntervalSeconds * 1000) {
@@ -317,6 +324,26 @@ export class RewardsService {
       minIntervalSeconds: data.minIntervalSeconds,
       sessionTtlSeconds: data.sessionTtlSeconds
     }
+  }
+
+  private async serializableTransaction<T>(work: (tx: Prisma.TransactionClient) => Promise<T>) {
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      try {
+        return await this.prisma.$transaction(work, {
+          isolationLevel: Prisma.TransactionIsolationLevel.Serializable
+        })
+      } catch (error) {
+        if ((error as { code?: string })?.code !== 'P2034' || attempt === 2) throw error
+      }
+    }
+    throw new BadRequestException('transaction_failed')
+  }
+
+  private localDayKey(value: Date) {
+    const year = value.getFullYear()
+    const month = String(value.getMonth() + 1).padStart(2, '0')
+    const day = String(value.getDate()).padStart(2, '0')
+    return `${year}-${month}-${day}`
   }
 
   private auditJson(value: unknown) {

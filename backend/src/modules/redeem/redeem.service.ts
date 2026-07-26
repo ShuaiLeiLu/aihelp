@@ -12,24 +12,28 @@ export class RedeemService {
 
   async redeem(userId: string, code: string) {
     const codeHash = sha256(String(code || '').trim().toUpperCase())
-    const redeemCode = await this.prisma.redeemCode.findUnique({ where: { codeHash }, include: { plan: true } })
-    if (!redeemCode) throw new BadRequestException('redeem_code_invalid')
-    if (redeemCode.status === 'used') throw new BadRequestException('redeem_code_used')
-    if (redeemCode.status === 'revoked') throw new BadRequestException('redeem_code_revoked')
-    if (redeemCode.expiresAt && redeemCode.expiresAt <= new Date()) throw new BadRequestException('redeem_code_expired')
-    if (redeemCode.plan.status !== 'active') throw new BadRequestException('plan_disabled')
+    return this.prisma.$transaction(async (tx) => {
+      const redeemCode = await tx.redeemCode.findUnique({ where: { codeHash }, include: { plan: true } })
+      if (!redeemCode) throw new BadRequestException('redeem_code_invalid')
+      if (redeemCode.status === 'used') throw new BadRequestException('redeem_code_used')
+      if (redeemCode.status === 'revoked') throw new BadRequestException('redeem_code_revoked')
+      if (redeemCode.expiresAt && redeemCode.expiresAt <= new Date()) throw new BadRequestException('redeem_code_expired')
+      if (redeemCode.plan.status !== 'active') throw new BadRequestException('plan_disabled')
 
-    await this.prisma.redeemCode.update({
-      where: { id: redeemCode.id },
-      data: { status: 'used', usedByUserId: userId, usedAt: new Date() }
-    })
+      const claimed = await tx.redeemCode.updateMany({
+        where: { id: redeemCode.id, status: 'unused' },
+        data: { status: 'used', usedByUserId: userId, usedAt: new Date() }
+      })
+      if (claimed.count !== 1) throw new BadRequestException('redeem_code_used')
 
-    return this.points.addPoints({
-      userId,
-      points: redeemCode.plan.pointAmount,
-      type: 'redeem_code',
-      relatedId: redeemCode.id,
-      remark: `兑换套餐：${redeemCode.plan.name}`
+      return this.points.changePointsInTransaction(
+        tx,
+        userId,
+        redeemCode.plan.pointAmount,
+        'redeem_code',
+        redeemCode.id,
+        `兑换套餐：${redeemCode.plan.name}`
+      )
     })
   }
 

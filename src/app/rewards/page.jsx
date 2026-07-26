@@ -349,18 +349,6 @@ export default function RewardsPage() {
               onClaim={() => handleClaimTask('models')}
               onGo={() => router.push('/chat')}
             />
-            {/* Task 4 */}
-            <TaskRow
-              title="分享一段对话"
-              desc="在对话页面中成功分享一次你的对话"
-              reward="+300"
-              status={tasks?.share}
-              onClaim={() => handleClaimTask('share')}
-              onGo={() => {
-                toast.info('去对话页面，点击消息底部的分享按钮即可完成任务');
-                router.push('/chat');
-              }}
-            />
           </div>
         </div>
 

@@ -1,11 +1,12 @@
 'use client'
 
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
 import { ArrowLeft, Coins, Gift, History, LogOut, PlayCircle, RefreshCw, ShieldCheck, Sparkles, Ticket } from 'lucide-react'
-import { fetchMe, fetchPointsLedger, fetchPointsSummary, logout } from '@/lib/api'
+import { fetchMe, fetchPointsLedger, fetchPointsSummary } from '@/lib/api'
 import { useAuthStore } from '@/store/useStore'
+import { performLogoutCleanup } from '@/lib/auth-cleanup'
 import { cn } from '@/lib/utils'
 import ProfileShell from '@/components/profile/ProfileShell'
 
@@ -15,6 +16,8 @@ export default function ProfilePage() {
   const [ledger, setLedger] = useState([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
+  const refreshGeneration = useRef(0)
+  const isLoggingOut = useRef(false)
 
   useEffect(() => {
     refresh()
@@ -22,6 +25,8 @@ export default function ProfilePage() {
 
   const balance = useMemo(() => formatToken(points?.pointsBalance || 0), [points])
   async function refresh() {
+    const generation = ++refreshGeneration.current
+    if (isLoggingOut.current) return
     try {
       setLoading(true)
       setError('')
@@ -30,9 +35,11 @@ export default function ProfilePage() {
         fetchPointsSummary(),
         fetchPointsLedger({ pageSize: 30 })
       ])
+      if (isLoggingOut.current || generation !== refreshGeneration.current) return
       setSession({ user: nextUser, points: nextPoints })
       setLedger(nextLedger)
     } catch (err) {
+      if (isLoggingOut.current || generation !== refreshGeneration.current) return
       if (String(err.message || '').includes('请先登录')) {
         clearSession()
         router.replace('/login')
@@ -40,13 +47,15 @@ export default function ProfilePage() {
       }
       setError(err.message || '个人中心加载失败')
     } finally {
-      setLoading(false)
+      if (!isLoggingOut.current && generation === refreshGeneration.current) setLoading(false)
     }
   }
 
   async function handleLogout() {
-    await logout().catch(() => null)
-    clearSession()
+    isLoggingOut.current = true
+    refreshGeneration.current += 1
+    setLoading(false)
+    await performLogoutCleanup()
     router.replace('/login')
   }
 

@@ -10,6 +10,8 @@ REMOTE_HOST="${REMOTE_HOST:-43.155.204.215}"
 REMOTE_PORT="${REMOTE_PORT:-22}"
 REMOTE_USER="${REMOTE_USER:-root}"
 REMOTE_PASS="${REMOTE_PASS:-}"
+SSH_STRICT_HOST_KEY_CHECKING="${SSH_STRICT_HOST_KEY_CHECKING:-accept-new}"
+ALLOW_ROOT_DEPLOY="${ALLOW_ROOT_DEPLOY:-false}"
 REMOTE_DIR="${REMOTE_DIR:-/opt/chatty}"
 REMOTE_TMP="${REMOTE_TMP:-/tmp/chatty-release.tar.gz}"
 COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME:-chatty}"
@@ -30,10 +32,8 @@ usage() {
   cat <<'EOF'
 Usage: deploy-remote.sh [options]
 
-Required:
-  --password PASS                SSH password (or set REMOTE_PASS)
-
 Options:
+  --password PASS                SSH password (or set REMOTE_PASS)
   --host HOST                    Remote host (default: 43.155.204.215)
   --port PORT                    SSH port (default: 22)
   --user USER                    SSH user (default: root)
@@ -47,6 +47,10 @@ Options:
   --skip-build                   Skip docker image build
   --dry-run                      Print commands only
   -h, --help                     Show help
+
+Environment:
+  ALLOW_ROOT_DEPLOY=true         Explicitly allow deploying as root
+  SSH_STRICT_HOST_KEY_CHECKING   SSH host-key policy (default: accept-new)
 EOF
 }
 
@@ -109,22 +113,51 @@ parse_args() {
 }
 
 remote_cmd() {
-  run sshpass -p "$REMOTE_PASS" ssh \
-    -o StrictHostKeyChecking=no \
-    -p "$REMOTE_PORT" \
-    "$REMOTE_USER@$REMOTE_HOST" "$@"
+  if [ -n "$REMOTE_PASS" ]; then
+    run sshpass -e ssh \
+      -o "StrictHostKeyChecking=$SSH_STRICT_HOST_KEY_CHECKING" \
+      -p "$REMOTE_PORT" \
+      "$REMOTE_USER@$REMOTE_HOST" "$@"
+  else
+    run ssh \
+      -o "StrictHostKeyChecking=$SSH_STRICT_HOST_KEY_CHECKING" \
+      -p "$REMOTE_PORT" \
+      "$REMOTE_USER@$REMOTE_HOST" "$@"
+  fi
+}
+
+upload_release() {
+  if [ -n "$REMOTE_PASS" ]; then
+    run sshpass -e scp \
+      -o "StrictHostKeyChecking=$SSH_STRICT_HOST_KEY_CHECKING" \
+      -P "$REMOTE_PORT" \
+      "$TAR_PATH" \
+      "$REMOTE_USER@$REMOTE_HOST:$REMOTE_TMP"
+  else
+    run scp \
+      -o "StrictHostKeyChecking=$SSH_STRICT_HOST_KEY_CHECKING" \
+      -P "$REMOTE_PORT" \
+      "$TAR_PATH" \
+      "$REMOTE_USER@$REMOTE_HOST:$REMOTE_TMP"
+  fi
 }
 
 main() {
   parse_args "$@"
 
   require_cmd tar
-  require_cmd sshpass
   require_cmd scp
   require_cmd ssh
 
-  if [ -z "$REMOTE_PASS" ]; then
-    printf 'REMOTE_PASS is required. Use --password or set REMOTE_PASS env.\n' >&2
+  if [ -n "$REMOTE_PASS" ]; then
+    require_cmd sshpass
+    export SSHPASS="$REMOTE_PASS"
+  else
+    log "using SSH key/agent authentication"
+  fi
+
+  if [ "$REMOTE_USER" = "root" ] && [ "$ALLOW_ROOT_DEPLOY" != "true" ]; then
+    printf 'Refusing root deployment. Set ALLOW_ROOT_DEPLOY=true only when root is required.\n' >&2
     exit 1
   fi
 
@@ -139,15 +172,19 @@ main() {
     --exclude='*.log' \
     --exclude='.DS_Store' \
     --exclude='._*' \
+    --exclude='.env' \
+    --exclude='.env.*' \
+    --exclude='*/.env' \
+    --exclude='*/.env.*' \
+    --exclude='.github/.env' \
+    --exclude='backend/.env' \
+    --exclude='miniprogram/utils/config.local.js' \
+    --exclude='miniprogram/project.private.config.json' \
     -C "$LOCAL_ROOT" \
     .
 
   log "uploading package to $REMOTE_USER@$REMOTE_HOST:$REMOTE_TMP"
-  run sshpass -p "$REMOTE_PASS" scp \
-    -o StrictHostKeyChecking=no \
-    -P "$REMOTE_PORT" \
-    "$TAR_PATH" \
-    "$REMOTE_USER@$REMOTE_HOST:$REMOTE_TMP"
+  upload_release
 
   log "extracting package and running remote deploy script"
   remote_cmd "set -eu; \

@@ -82,10 +82,17 @@ export class RechargeService {
       if (order.status === 'paid') return order
       if (order.status !== 'pending') throw new BadRequestException('recharge_order_not_payable')
 
-      const paidOrder = await tx.rechargeOrder.update({
-        where: { id: order.id },
-        data: { status: 'paid', paidAt: new Date() }
+      const paidAt = new Date()
+      const claimed = await tx.rechargeOrder.updateMany({
+        where: { id: order.id, status: 'pending' },
+        data: { status: 'paid', paidAt }
       })
+      if (claimed.count !== 1) {
+        const current = await tx.rechargeOrder.findUnique({ where: { id: order.id } })
+        if (current?.status === 'paid') return current
+        throw new BadRequestException('recharge_order_not_payable')
+      }
+      const paidOrder = { ...order, status: 'paid' as const, paidAt }
       await this.points.changePointsInTransaction(tx, order.userId, order.points, 'recharge', order.id, `充值订单：${order.orderNo}`)
       await tx.adminAuditLog.create({
         data: {

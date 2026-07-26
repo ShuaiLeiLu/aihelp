@@ -1,12 +1,100 @@
 import { create } from 'zustand'
-import { persist } from 'zustand/middleware'
+import { createJSONStorage, persist } from 'zustand/middleware'
+
+const ACTIVE_ACCOUNT_STORAGE_KEY = 'chatty-active-account'
+
+function canUseStorage() {
+  return typeof window !== 'undefined' && typeof window.localStorage !== 'undefined'
+}
+
+function normalizeAccountId(accountId) {
+  const value = String(accountId || '').trim()
+  return value || null
+}
+
+export function getAccountStorageKey(name, accountId) {
+  const normalized = normalizeAccountId(accountId)
+  return normalized ? `${name}:user:${encodeURIComponent(normalized)}` : null
+}
+
+export function setActiveAccountId(accountId) {
+  if (!canUseStorage()) return
+  const normalized = normalizeAccountId(accountId)
+  if (normalized) {
+    window.localStorage.setItem(ACTIVE_ACCOUNT_STORAGE_KEY, normalized)
+    // Legacy unscoped values cannot be attributed to a user safely.
+    window.localStorage.removeItem('chatty-storage')
+    window.localStorage.removeItem('chatty-image-ui')
+  } else {
+    window.localStorage.removeItem(ACTIVE_ACCOUNT_STORAGE_KEY)
+  }
+}
+
+export function readAccountState(name, accountId) {
+  if (!canUseStorage()) return null
+  const key = getAccountStorageKey(name, accountId)
+  if (!key) return null
+  try {
+    const raw = window.localStorage.getItem(key)
+    if (!raw) return null
+    const parsed = JSON.parse(raw)
+    return parsed?.state && typeof parsed.state === 'object' ? parsed.state : null
+  } catch {
+    return null
+  }
+}
+
+export function accountStorage(name) {
+  return {
+    getItem: () => {
+      if (!canUseStorage()) return null
+      const accountId = window.localStorage.getItem(ACTIVE_ACCOUNT_STORAGE_KEY)
+      const key = getAccountStorageKey(name, accountId)
+      return key ? window.localStorage.getItem(key) : null
+    },
+    setItem: (_name, value) => {
+      if (!canUseStorage()) return
+      const accountId = window.localStorage.getItem(ACTIVE_ACCOUNT_STORAGE_KEY)
+      const key = getAccountStorageKey(name, accountId)
+      if (key) window.localStorage.setItem(key, value)
+    },
+    removeItem: () => {
+      if (!canUseStorage()) return
+      const accountId = window.localStorage.getItem(ACTIVE_ACCOUNT_STORAGE_KEY)
+      const key = getAccountStorageKey(name, accountId)
+      if (key) window.localStorage.removeItem(key)
+    }
+  }
+}
 
 export const useChatStore = create(
   persist(
     (set, get) => ({
+      accountId: null,
       conversations: [],
       activeConversationId: null,
       history: {}, // convId -> messages[]
+
+      setAccountScope: (accountId) => {
+        const normalized = normalizeAccountId(accountId)
+        if (!normalized || get().accountId === normalized) return
+        setActiveAccountId(normalized)
+        const saved = readAccountState('chatty-storage', normalized)
+        set({
+          accountId: normalized,
+          conversations: Array.isArray(saved?.conversations) ? saved.conversations : [],
+          activeConversationId: saved?.activeConversationId || null,
+          history: saved?.history && typeof saved.history === 'object' ? saved.history : {}
+        })
+      },
+
+      clearAccountData: () => {
+        const currentId = get().accountId
+        set({ accountId: null, conversations: [], activeConversationId: null, history: {} })
+        const key = getAccountStorageKey('chatty-storage', currentId)
+        if (canUseStorage() && key) window.localStorage.removeItem(key)
+        setActiveAccountId(null)
+      },
 
       // Actions
       addConversation: (conv) => set((state) => ({
@@ -75,6 +163,13 @@ export const useChatStore = create(
     }),
     {
       name: 'chatty-storage',
+      storage: createJSONStorage(() => accountStorage('chatty-storage')),
+      skipHydration: true,
+      partialize: (state) => ({
+        conversations: state.conversations,
+        activeConversationId: state.activeConversationId,
+        history: state.history
+      })
     }
   )
 )

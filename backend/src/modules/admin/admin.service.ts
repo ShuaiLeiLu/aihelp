@@ -1,4 +1,4 @@
-import { BadRequestException, Injectable } from '@nestjs/common'
+import { BadRequestException, Injectable, UnauthorizedException } from '@nestjs/common'
 import { ConfigService } from '@nestjs/config'
 import { LlmRequestStatus, PointLedgerType, Prisma } from '@prisma/client'
 import { randomUUID } from 'crypto'
@@ -43,6 +43,7 @@ export class AdminService {
     const existing = await this.prisma.adminUser.findFirst({
       where: { OR: [{ casdoorSubject: input.subject }, { username }, { email }] }
     })
+    if (existing?.status === 'disabled') throw new UnauthorizedException('admin_disabled')
     const admin = existing
       ? await this.prisma.adminUser.update({
           where: { id: existing.id },
@@ -289,6 +290,8 @@ export class AdminService {
   }
 
   private adminSessionSecret() {
-    return this.config.get<string>('ADMIN_SESSION_SECRET') || this.config.get<string>('COOKIE_SECRET') || 'chatty-admin-session-secret'
+    const secret = this.config.get<string>('ADMIN_SESSION_SECRET') || this.config.get<string>('COOKIE_SECRET')
+    if (!secret) throw new UnauthorizedException('session_secret_not_configured')
+    return secret
   }
 }

@@ -21,6 +21,7 @@ import { useImageStore } from '@/store/useImageStore'
 import SettingsModal from './SettingsModal'
 import { cn, formatNumber, formatRelativeTime } from '@/lib/utils'
 import { deleteTask } from '@/lib/image/db'
+import { performLogoutCleanup } from '@/lib/auth-cleanup'
 
 export default function Shell({ children, workspace = 'chat' }) {
   const router = useRouter()
@@ -34,19 +35,29 @@ export default function Shell({ children, workspace = 'chat' }) {
   } = useUIStore()
   const {
     conversations,
+    accountId: chatAccountId,
     activeConversationId,
     setActiveConversationId,
-    deleteConversation
+    deleteConversation,
+    setAccountScope: setChatAccountScope
   } = useChatStore()
   const { selectedProvider, selectedModel, setSelectedModel, setSelectedProvider } = useModelStore()
   const { user, points, isAuthenticated, isLoading: isAuthLoading } = useAuthStore()
   const imageTaskIndex = useImageStore((s) => s.taskIndex)
+  const imageAccountId = useImageStore((s) => s.accountId)
   const activeTaskId = useImageStore((s) => s.activeTaskId)
   const setActiveTaskId = useImageStore((s) => s.setActiveTaskId)
   const removeTaskFromIndex = useImageStore((s) => s.removeTaskFromIndex)
+  const setImageAccountScope = useImageStore((s) => s.setAccountScope)
 
   const [isMobile, setIsMobile] = useState(false)
   const [isSettingsOpen, setIsSettingsOpen] = useState(false)
+
+  useEffect(() => {
+    if (!user?.id) return
+    setChatAccountScope(user.id)
+    setImageAccountScope(user.id)
+  }, [user?.id, setChatAccountScope, setImageAccountScope])
 
   useEffect(() => {
     const checkMobile = () => {
@@ -106,6 +117,16 @@ export default function Shell({ children, workspace = 'chat' }) {
       console.warn('[shell] delete task failed', err)
     }
   }, [removeTaskFromIndex])
+
+  const handleLogout = useCallback(async () => {
+    setIsSettingsOpen(false)
+    await performLogoutCleanup()
+    router.replace('/login')
+  }, [router])
+
+  const accountReady = Boolean(user?.id) && chatAccountId === user.id && imageAccountId === user.id
+  const visibleConversations = accountReady ? conversations : []
+  const visibleImageTaskIndex = accountReady ? imageTaskIndex : []
 
   return (
     <div className="relative flex h-screen-dvh w-full overflow-hidden bg-rice-100 text-ink-900 paper">
@@ -195,14 +216,14 @@ export default function Shell({ children, workspace = 'chat' }) {
             <div className="flex-1 overflow-y-auto space-y-1 -mx-1 px-1 scrollbar-thin">
               {workspace === 'chat' ? (
                 <ChatList
-                  conversations={conversations}
+                  conversations={visibleConversations}
                   activeId={activeConversationId}
                   onSelect={handleSelectConversation}
                   onDelete={deleteConversation}
                 />
               ) : (
                 <ImageList
-                  tasks={imageTaskIndex}
+                  tasks={visibleImageTaskIndex}
                   activeTaskId={activeTaskId}
                   onSelect={handleSelectTask}
                   onDelete={handleDeleteTask}
@@ -300,7 +321,7 @@ export default function Shell({ children, workspace = 'chat' }) {
       </main>
 
       <MobileTabbar active={workspace} />
-      <SettingsModal isOpen={isSettingsOpen} onClose={() => setIsSettingsOpen(false)} />
+      <SettingsModal isOpen={isSettingsOpen} onClose={() => setIsSettingsOpen(false)} onLogout={handleLogout} />
     </div>
   )
 }

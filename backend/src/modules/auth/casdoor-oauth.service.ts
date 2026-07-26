@@ -1,6 +1,6 @@
 import { BadRequestException, Injectable, Logger, UnauthorizedException } from '@nestjs/common'
 import { ConfigService } from '@nestjs/config'
-import { createHmac } from 'crypto'
+import { createHmac, timingSafeEqual } from 'crypto'
 import { Request, Response } from 'express'
 import { getClientIp, getUserAgent, randomToken } from '../../common/http'
 import { AdminService } from '../admin/admin.service'
@@ -228,7 +228,7 @@ export class CasdoorOauthService {
   }
 
   private matchesAdmin(profile: CasdoorProfile) {
-    return profile.isAdmin === true || this.matchesAny(profile, this.adminMatchers()) || this.matchesAny(profile, ['admin', 'owner'])
+    return profile.isAdmin === true || this.matchesAny(profile, this.adminMatchers())
   }
 
   private matchesAny(profile: CasdoorProfile, matchers: string[]) {
@@ -241,9 +241,6 @@ export class CasdoorOauthService {
     const raw = [
       profile.sub,
       profile.id,
-      profile.name,
-      profile.displayName,
-      profile.preferred_username,
       profile.email,
       ...this.arrayValues(profile.roles),
       ...this.arrayValues(profile.groups),
@@ -273,8 +270,9 @@ export class CasdoorOauthService {
   private verifyState(state: string): StatePayload | null {
     if (!state.includes('.')) return null
     const [body, sig] = state.split('.', 2)
-    const expected = createHmac('sha256', this.stateSecret()).update(body).digest('base64url')
-    if (sig !== expected) return null
+    const expected = Buffer.from(createHmac('sha256', this.stateSecret()).update(body).digest('base64url'))
+    const actual = Buffer.from(sig)
+    if (actual.length !== expected.length || !timingSafeEqual(actual, expected)) return null
     try {
       const data = JSON.parse(Buffer.from(body, 'base64url').toString('utf8'))
       if (data?.v !== STATE_VERSION) return null
@@ -291,7 +289,9 @@ export class CasdoorOauthService {
   }
 
   private normalizeNext(next: string | undefined | null): string {
-    const v = String(next || '/').trim()
+    const raw = String(next || '')
+    if (/[\u0000-\u001f\u007f]/.test(raw) || raw.includes('\\') || /%5c/i.test(raw)) return '/'
+    const v = raw.trim() || '/'
     if (!v.startsWith('/') || v.startsWith('//')) return '/'
     return v
   }
@@ -330,7 +330,9 @@ export class CasdoorOauthService {
   }
 
   private stateSecret() {
-    return this.config.get<string>('CASDOOR_STATE_SECRET') || this.config.get<string>('COOKIE_SECRET') || 'chatty-casdoor-state-secret'
+    const secret = this.config.get<string>('CASDOOR_STATE_SECRET') || this.config.get<string>('COOKIE_SECRET')
+    if (!secret) throw new BadRequestException('state_secret_not_configured')
+    return secret
   }
 
   private adminMatchers() {

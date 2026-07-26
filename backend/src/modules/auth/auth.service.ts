@@ -53,6 +53,8 @@ export class AuthService {
   }
 
   private sessionSecret() {
-    return this.config.get<string>('USER_SESSION_SECRET') || this.config.get<string>('COOKIE_SECRET') || 'chatty-user-session-secret'
+    const secret = this.config.get<string>('USER_SESSION_SECRET') || this.config.get<string>('COOKIE_SECRET')
+    if (!secret) throw new UnauthorizedException('session_secret_not_configured')
+    return secret
   }
 }

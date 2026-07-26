@@ -8,7 +8,7 @@ import { cn } from '@/lib/utils'
 
 const NAV_ITEMS = ['通用', '外观', '对话偏好', '绘图偏好', '数据与隐私', '通知', '快捷键', '关于']
 
-export default function SettingsModal({ isOpen, onClose }) {
+export default function SettingsModal({ isOpen, onClose, onLogout }) {
   const [home, setHome] = useState('chat')
   const [autoCollapse, setAutoCollapse] = useState(true)
   const [streaming, setStreaming] = useState(true)
@@ -116,9 +116,9 @@ export default function SettingsModal({ isOpen, onClose }) {
                 <div className="flex items-center justify-between gap-4 py-3">
                   <div className="min-w-0">
                     <div className="font-medium text-sm text-verm-500">退出登录</div>
-                    <div className="mt-0.5 text-[11px] text-ink-500">退出后本地草稿将保留</div>
+                    <div className="mt-0.5 text-[11px] text-ink-500">退出后将清除本设备上的对话与绘图数据</div>
                   </div>
-                  <Button type="button" variant="outline" size="sm" className="border-verm-500/30 text-verm-500 hover:bg-verm-500/10">
+                  <Button type="button" variant="outline" size="sm" onClick={onLogout} className="border-verm-500/30 text-verm-500 hover:bg-verm-500/10">
                     <LogOut size={14} />
                     退 出
                   </Button>
